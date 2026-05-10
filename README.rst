@@ -1,101 +1,148 @@
 PhotoCollage
 ============
 
-.. image::
-   https://travis-ci.org/adrienverge/PhotoCollage.svg?branch=master
-   :target: https://travis-ci.org/adrienverge/PhotoCollage
-   :alt: CI tests status
+*Headless command line tool to make photo collage posters*
 
-*Graphical tool to make photo collage posters*
+PhotoCollage allows you to create photo collage posters from image files or
+whole directories. It assembles the input photographs it is given to generate a
+poster image. Photos are automatically arranged to fill the whole poster while
+keeping each photo as large as possible.
 
-PhotoCollage allows you to create photo collage posters. It assembles the input
-photographs it is given to generate a big poster. Photos are automatically
-arranged to fill the whole poster, then you can change the final layout,
-dimensions, border or swap photos in the generated grid. Eventually the final
-poster image can be saved in any size.
-
-The algorithm generates random layouts that place photos while taking advantage
-of all free space. It tries to fill all space while keeping each photo as
-large as possible.
-
-PhotoCollage does more or less the same as many commercial websites do, but
-for free and with open-source code.
-
-.. image::
-   screenshots/photocollage-1.4-preview.png
-   :alt: screenshot
-
-It provides a library to create photo layouts and posters, and a GTK graphical
-user interface. PhotoCollage is written in Python (compatible with versions 2
-and 3) and requires the Python Imaging Library (PIL).
+This fork removes the GTK desktop interface and exposes PhotoCollage as a
+server-friendly CLI. It is suitable for scripts, Docker containers, homelabs,
+and other headless Linux environments.
 
 Features:
 
-* generate random new layouts until one suits the user
+* generate random collage layouts from a directory of images
+* choose output dimensions in pixels
 * choose border color and width
-* possible to swap photos in the generated grid
-* save high-resolution image
-* works even with a large number of photos (> 100)
-* integrates into the GNOME environment
-* available in English, French, German, Czech, Italian, Bulgarian, Dutch, Russian, Spanish, Polish and Ukrainian
+* use a random seed for repeatable layouts
+* save high-resolution images
+* works with a large number of photos (> 100)
+* accepts command-line options or JSON/TOML configuration files
 
 Installation
 ------------
 
-* Fedora 19+:
+Install from this repository:
 
-  .. code:: bash
+.. code:: bash
 
-   sudo dnf install photocollage
+   python -m pip install .
 
-* Debian 9+ / Ubuntu 16.10+:
+For editable local development:
 
-  .. code:: bash
+.. code:: bash
 
-   sudo apt-get install photocollage
-
-* Using pip, the Python package manager:
-
-  .. code:: bash
-
-   sudo pip3 install photocollage
+   python -m pip install -e .
 
 Usage
 -----
 
-After install a launcher for PhotoCollage will appear in your desktop menu.
-
-If it doesn't, just run the command:
+Generate a collage from a directory:
 
 .. code:: bash
 
- photocollage
+   photocollage ./photos --output ./out/collage.jpg --width 3600 --height 2400
+
+Use a deterministic seed and recurse through subdirectories:
+
+.. code:: bash
+
+   photocollage ./photos \
+     --recursive \
+     --seed 42 \
+     --output ./out/collage.png \
+     --width 3508 \
+     --height 2480 \
+     --border-color white \
+     --border-percent 1.5
+
+Supported input files are the formats Pillow can read, including common JPEG,
+PNG, GIF, TIFF, BMP, WebP and related formats.
+
+Configuration files
+-------------------
+
+JSON and TOML config files are supported. Command-line options override values
+from the config file.
+
+Example JSON config:
+
+.. code:: json
+
+   {
+     "input": "./photos",
+     "output": "./out/collage.jpg",
+     "width": 3600,
+     "height": 2400,
+     "border_color": "white",
+     "border_percent": 1.0,
+     "quality": "best",
+     "recursive": true,
+     "seed": 42
+   }
+
+Run it with:
+
+.. code:: bash
+
+   photocollage --config collage.json
+
+Example TOML config:
+
+.. code:: toml
+
+   input = "./photos"
+   output = "./out/collage.jpg"
+   width = 3600
+   height = 2400
+   border_color = "white"
+   border_percent = 1.0
+   quality = "best"
+   recursive = true
+   seed = 42
+
+Run it with:
+
+.. code:: bash
+
+   photocollage --config collage.toml
+
+Options
+-------
+
+.. code:: text
+
+   positional arguments:
+     input                 Input image files or directories.
+
+   options:
+     -c, --config PATH     Path to a JSON or TOML config file.
+     -o, --output PATH     Output image path.
+     --width PX            Output width in pixels.
+     --height PX           Output height in pixels.
+     --border-width PX     Border width in pixels.
+     --border-percent N    Border width as a percentage of larger dimension.
+     --border-color COLOR  Border color, e.g. black, white, #ffcc00.
+     --quality QUALITY     skeleton, fast, or best.
+     --recursive           Search input directories recursively.
+     --include-hidden      Include hidden files and directories.
+     --seed N              Random seed for repeatable layouts.
 
 Hacking
 -------
 
-* If you changed the source and want to test your modifications, run:
+If you changed the source and want to test your modifications, run:
 
-  .. code:: bash
+.. code:: bash
 
-   python -c 'from photocollage import gtkgui; gtkgui.main()'
+   python -m photocollage.cli ./photos --output ./out/collage.jpg
 
-* If you need to build a package from source and install it:
+If you wish to contribute, please lint your code and pass tests:
 
-  .. code:: bash
-
-   # Install dependencies
-   sudo dnf install python3-pillow python3-gobject
-   sudo apt-get install python3-pil python3-gi
-   sudo pacman -S python-pillow python-gobject
-
-   # Install PhotoCollage
-   python -m build
-   pip install --user --upgrade dist/photocollage-*.tar.gz
-
-* If you wish to contribute, please lint your code and pass tests:
-
-  .. code:: bash
+.. code:: bash
 
    flake8 .
    python -m unittest tests/test_*.py
