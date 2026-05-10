@@ -77,6 +77,37 @@ class PIL_SUPPORTED_EXTS:
     }
 
 
+def high_quality_resample():
+    try:
+        return PIL.Image.Resampling.LANCZOS
+    except AttributeError:
+        return PIL.Image.LANCZOS if hasattr(PIL.Image, "LANCZOS") else PIL.Image.ANTIALIAS
+
+
+def fast_resample():
+    try:
+        return PIL.Image.Resampling.NEAREST
+    except AttributeError:
+        return PIL.Image.NEAREST
+
+
+def has_alpha(img):
+    return (
+        img.mode in ("RGBA", "LA") or
+        (img.mode == "P" and "transparency" in img.info)
+    )
+
+
+def composite_on_background(img, background_color):
+    """Return an RGB image with alpha correctly composited on a background."""
+    if not has_alpha(img):
+        return img.convert("RGB")
+
+    rgba = img.convert("RGBA")
+    background = PIL.Image.new("RGBA", rgba.size, background_color + (255,))
+    return PIL.Image.alpha_composite(background, rgba).convert("RGB")
+
+
 def random_color():
     r = random.randrange(256)
     g = random.randrange(256)
@@ -129,13 +160,15 @@ class RenderingTask(Thread):
 
     """
     def __init__(self, page, border_width=0.01, border_color=(0, 0, 0),
-                 quality=QUALITY_FAST, output_file=None,
-                 on_update=None, on_complete=None, on_fail=None):
+                 background_color=(255, 255, 255), quality=QUALITY_FAST,
+                 output_file=None, on_update=None, on_complete=None,
+                 on_fail=None):
         super().__init__()
 
         self.page = page
         self.border_width = border_width
         self.border_color = border_color
+        self.background_color = background_color
         self.quality = quality
 
         self.output_file = output_file
@@ -210,7 +243,7 @@ class RenderingTask(Thread):
         else:
             img = PIL.Image.open(cell.photo.filename)
 
-            # Rotate image is EXIF says so
+            # Rotate image if EXIF says so.
             if cell.photo.orientation == 3:
                 img = img.rotate(180, expand=True)
             elif cell.photo.orientation == 6:
@@ -219,9 +252,9 @@ class RenderingTask(Thread):
                 img = img.rotate(90, expand=True)
 
         if self.quality == QUALITY_FAST:
-            method = PIL.Image.NEAREST
+            method = fast_resample()
         else:
-            method = PIL.Image.ANTIALIAS
+            method = high_quality_resample()
 
         shape = img.size[0] * cell.h - img.size[1] * cell.w
         if shape > 0:  # image is too thick
@@ -258,7 +291,7 @@ class RenderingTask(Thread):
                     (1 - cell.photo.offset_h)))
             ))
 
-        return img
+        return composite_on_background(img, self.background_color)
 
     def paste_photo(self, canvas, cell, img):
         canvas.paste(img, (int(round(cell.x)), int(round(cell.y))))
@@ -267,7 +300,8 @@ class RenderingTask(Thread):
     def run(self):
         try:
             canvas = PIL.Image.new(
-                "RGB", (int(self.page.w), int(self.page.h)), "white")
+                "RGB", (int(self.page.w), int(self.page.h)),
+                self.background_color)
 
             self.draw_skeleton(canvas)
             self.draw_borders(canvas)
