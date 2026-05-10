@@ -15,13 +15,10 @@ from pathlib import Path
 import random
 import sys
 
-from PIL import Image, ImageColor
+from PIL import ImageColor
 
 from photocollage import collage, render
 from photocollage.render import PIL_SUPPORTED_EXTS as EXTS
-
-if not hasattr(Image, "ANTIALIAS"):
-    Image.ANTIALIAS = Image.Resampling.LANCZOS
 
 DEFAULTS = {
     "input": [],
@@ -31,10 +28,12 @@ DEFAULTS = {
     "border_width": None,
     "border_percent": 1.0,
     "border_color": "black",
+    "background_color": "white",
     "quality": "best",
     "recursive": False,
     "include_hidden": False,
     "seed": None,
+    "max_upscale": None,
 }
 
 QUALITY_BY_NAME = {
@@ -127,7 +126,64 @@ def build_page(photolist, width, height, seed=None):
     return page
 
 
-def render_to_file(page, output_file, border_width, border_color, quality):
+def photo_cells(page):
+    for col in page.cols:
+        for cell in col.cells:
+            if not cell.is_extension():
+                yield cell
+
+
+def collect_upscale_warnings(page, max_upscale=None):
+    warnings = []
+    for cell in photo_cells(page):
+        source_long_edge = max(float(cell.photo.w), float(cell.photo.h))
+        target_long_edge = max(float(cell.w), float(cell.h))
+        if source_long_edge <= 0:
+            continue
+        upscale = target_long_edge / source_long_edge
+        if upscale > 2.0:
+            warnings.append((upscale, cell.photo.filename, cell.photo.w,
+                             cell.photo.h, cell.w, cell.h))
+
+    warnings.sort(reverse=True, key=lambda item: item[0])
+
+    if max_upscale is not None:
+        offenders = [item for item in warnings if item[0] > max_upscale]
+        if offenders:
+            lines = [
+                "One or more images would be upscaled beyond --max-upscale={:.2f}.".format(max_upscale),
+                "Use larger source images, lower the output size, or raise --max-upscale.",
+            ]
+            for upscale, filename, src_w, src_h, cell_w, cell_h in offenders[:10]:
+                lines.append(
+                    "- {}: {:.1f}x upscale from {}x{} to cell {:.0f}x{:.0f}".format(
+                        filename, upscale, src_w, src_h, cell_w, cell_h
+                    )
+                )
+            raise SystemExit("\n".join(lines))
+
+    return warnings
+
+
+def print_upscale_warnings(warnings):
+    if not warnings:
+        return
+
+    print(
+        "Warning: some images are being enlarged heavily, so output may look soft or pixelated.",
+        file=sys.stderr,
+    )
+    for upscale, filename, src_w, src_h, cell_w, cell_h in warnings[:10]:
+        print(
+            "- {}: {:.1f}x upscale from {}x{} to cell {:.0f}x{:.0f}".format(
+                filename, upscale, src_w, src_h, cell_w, cell_h
+            ),
+            file=sys.stderr,
+        )
+
+
+def render_to_file(page, output_file, border_width, border_color,
+                   background_color, quality):
     errors = []
 
     def on_fail(exception):
@@ -137,6 +193,7 @@ def render_to_file(page, output_file, border_width, border_color, quality):
         page,
         border_width=border_width,
         border_color=border_color,
+        background_color=background_color,
         quality=QUALITY_BY_NAME[quality],
         output_file=output_file,
         on_fail=on_fail,
@@ -163,10 +220,19 @@ def parse_args(argv=None):
         help="Border width as a percentage of the larger output dimension.",
     )
     parser.add_argument("--border-color", help="Border color, e.g. black, white, #ffcc00.")
+    parser.add_argument(
+        "--background-color",
+        help="Canvas/background color used behind transparent images.",
+    )
     parser.add_argument("--quality", choices=sorted(QUALITY_BY_NAME), help="Rendering quality.")
     parser.add_argument("--recursive", action="store_true", default=None)
     parser.add_argument("--include-hidden", action="store_true", default=None)
     parser.add_argument("--seed", type=int, help="Random seed for repeatable layouts.")
+    parser.add_argument(
+        "--max-upscale",
+        type=float,
+        help="Fail if any source image must be enlarged by more than this factor.",
+    )
     return parser.parse_args(argv)
 
 
@@ -176,7 +242,8 @@ def merged_options(args):
 
     for key in (
         "output", "width", "height", "border_width", "border_percent",
-        "border_color", "quality", "recursive", "include_hidden", "seed",
+        "border_color", "background_color", "quality", "recursive",
+        "include_hidden", "seed", "max_upscale",
     ):
         value = getattr(args, key)
         if value is not None:
@@ -213,6 +280,9 @@ def main(argv=None):
         seed=options["seed"],
     )
 
+    warnings = collect_upscale_warnings(page, options["max_upscale"])
+    print_upscale_warnings(warnings)
+
     if options["border_width"] is not None:
         border_width = float(options["border_width"])
     else:
@@ -222,6 +292,7 @@ def main(argv=None):
         )
 
     border_color = ImageColor.getrgb(str(options["border_color"]))
+    background_color = ImageColor.getrgb(str(options["background_color"]))
     output = str(Path(options["output"]).expanduser())
     os.makedirs(os.path.dirname(os.path.abspath(output)), exist_ok=True)
 
@@ -230,6 +301,7 @@ def main(argv=None):
         output,
         border_width=border_width,
         border_color=border_color,
+        background_color=background_color,
         quality=str(options["quality"]),
     )
 
