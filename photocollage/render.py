@@ -29,6 +29,11 @@ QUALITY_SKEL = 0
 QUALITY_FAST = 1
 QUALITY_BEST = 2
 
+CROP_COVER = "cover"
+CROP_CONTAIN = "contain"
+CROP_SMART = "smart"
+CROP_MODES = (CROP_COVER, CROP_CONTAIN, CROP_SMART)
+
 
 # Try to continue even if the input file is corrupted.
 # See issue at https://github.com/adrienverge/PhotoCollage/issues/65
@@ -108,6 +113,20 @@ def composite_on_background(img, background_color):
     return PIL.Image.alpha_composite(background, rgba).convert("RGB")
 
 
+def cover_crop_fraction(photo_w, photo_h, cell_w, cell_h):
+    """Return the largest source-axis crop fraction needed to cover a cell."""
+    scale = max(float(cell_w) / float(photo_w), float(cell_h) / float(photo_h))
+    scaled_w = float(photo_w) * scale
+    scaled_h = float(photo_h) * scale
+    crop_w = max(0.0, scaled_w - float(cell_w)) / scaled_w
+    crop_h = max(0.0, scaled_h - float(cell_h)) / scaled_h
+    return max(crop_w, crop_h)
+
+
+def cell_crop_fraction(cell):
+    return cover_crop_fraction(cell.photo.w, cell.photo.h, cell.w, cell.h)
+
+
 def random_color():
     r = random.randrange(256)
     g = random.randrange(256)
@@ -161,8 +180,8 @@ class RenderingTask(Thread):
     """
     def __init__(self, page, border_width=0.01, border_color=(0, 0, 0),
                  background_color=(255, 255, 255), quality=QUALITY_FAST,
-                 output_file=None, on_update=None, on_complete=None,
-                 on_fail=None):
+                 crop_mode=CROP_COVER, max_crop=0.10, output_file=None,
+                 on_update=None, on_complete=None, on_fail=None):
         super().__init__()
 
         self.page = page
@@ -170,6 +189,8 @@ class RenderingTask(Thread):
         self.border_color = border_color
         self.background_color = background_color
         self.quality = quality
+        self.crop_mode = crop_mode
+        self.max_crop = max_crop
 
         self.output_file = output_file
 
@@ -233,29 +254,32 @@ class RenderingTask(Thread):
                         draw.rectangle(xy + XY, color)
         return canvas
 
-    def resize_photo(self, cell, use_cache=False):
-        # If a thumbnail is already in cache, let's use it. But only if it is
-        # bigger than what we need, because we don't want to lose quality.
-        if (use_cache and cell.photo.filename in cache and
-                cache[cell.photo.filename].size[0] >= int(round(cell.w)) and
-                cache[cell.photo.filename].size[1] >= int(round(cell.h))):
-            img = cache[cell.photo.filename].copy()
-        else:
-            img = PIL.Image.open(cell.photo.filename)
+    def open_photo(self, cell):
+        img = PIL.Image.open(cell.photo.filename)
 
-            # Rotate image if EXIF says so.
-            if cell.photo.orientation == 3:
-                img = img.rotate(180, expand=True)
-            elif cell.photo.orientation == 6:
-                img = img.rotate(270, expand=True)
-            elif cell.photo.orientation == 8:
-                img = img.rotate(90, expand=True)
+        # Rotate image if EXIF says so.
+        if cell.photo.orientation == 3:
+            img = img.rotate(180, expand=True)
+        elif cell.photo.orientation == 6:
+            img = img.rotate(270, expand=True)
+        elif cell.photo.orientation == 8:
+            img = img.rotate(90, expand=True)
 
+        return img
+
+    def resample_method(self):
         if self.quality == QUALITY_FAST:
-            method = fast_resample()
-        else:
-            method = high_quality_resample()
+            return fast_resample()
+        return high_quality_resample()
 
+    def effective_crop_mode(self, cell):
+        if self.crop_mode == CROP_SMART:
+            if cell_crop_fraction(cell) > self.max_crop:
+                return CROP_CONTAIN
+            return CROP_COVER
+        return self.crop_mode
+
+    def resize_photo_cover(self, img, cell, method):
         shape = img.size[0] * cell.h - img.size[1] * cell.w
         if shape > 0:  # image is too thick
             img = img.resize((int(round(cell.h * img.size[0] / img.size[1])),
@@ -266,11 +290,6 @@ class RenderingTask(Thread):
                              method)
         else:
             img = img.resize((int(round(cell.w)), int(round(cell.h))), method)
-
-        # Save this new image to cache (if it is larger than the previous one)
-        if (use_cache and (cell.photo.filename not in cache or
-                           cache[cell.photo.filename].size[0] < img.size[0])):
-            cache[cell.photo.filename] = img
 
         if shape > 0:  # image is too thick
             width_to_crop = img.size[0] - cell.w
@@ -292,6 +311,32 @@ class RenderingTask(Thread):
             ))
 
         return composite_on_background(img, self.background_color)
+
+    def resize_photo_contain(self, img, cell, method):
+        scale = min(float(cell.w) / float(img.size[0]),
+                    float(cell.h) / float(img.size[1]))
+        target_w = max(1, int(round(img.size[0] * scale)))
+        target_h = max(1, int(round(img.size[1] * scale)))
+        img = img.resize((target_w, target_h), method)
+        img = composite_on_background(img, self.background_color)
+
+        canvas = PIL.Image.new(
+            "RGB",
+            (int(round(cell.w)), int(round(cell.h))),
+            self.background_color,
+        )
+        offset_x = int(round((canvas.size[0] - img.size[0]) / 2.0))
+        offset_y = int(round((canvas.size[1] - img.size[1]) / 2.0))
+        canvas.paste(img, (offset_x, offset_y))
+        return canvas
+
+    def resize_photo(self, cell, use_cache=False):
+        img = self.open_photo(cell)
+        method = self.resample_method()
+
+        if self.effective_crop_mode(cell) == CROP_CONTAIN:
+            return self.resize_photo_contain(img, cell, method)
+        return self.resize_photo_cover(img, cell, method)
 
     def paste_photo(self, canvas, cell, img):
         canvas.paste(img, (int(round(cell.x)), int(round(cell.y))))
