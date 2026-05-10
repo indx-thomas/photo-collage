@@ -17,7 +17,9 @@ Features:
 * generate random collage layouts from a directory of images
 * choose output dimensions in pixels
 * choose border color and width
+* choose a background color for transparent PNG/WebP assets
 * use a random seed for repeatable layouts
+* warn or fail when small images would be upscaled too far
 * save high-resolution images
 * works with a large number of photos (> 100)
 * accepts command-line options or JSON/TOML configuration files
@@ -59,6 +61,29 @@ Use a deterministic seed and recurse through subdirectories:
      --border-color white \
      --border-percent 1.5
 
+For transparent logo or artwork assets, choose the canvas background explicitly:
+
+.. code:: bash
+
+   photocollage ./logos \
+     --output ./out/collage.png \
+     --width 1600 \
+     --height 1200 \
+     --background-color black \
+     --border-color black \
+     --quality best
+
+To reject tiny source images before they become pixelated, set a maximum upscale
+factor:
+
+.. code:: bash
+
+   photocollage ./photos \
+     --output ./out/collage.png \
+     --width 1600 \
+     --height 1200 \
+     --max-upscale 3
+
 Supported input files are the formats Pillow can read, including common JPEG,
 PNG, GIF, TIFF, BMP, WebP and related formats.
 
@@ -74,14 +99,16 @@ Example JSON config:
 
    {
      "input": "./photos",
-     "output": "./out/collage.jpg",
+     "output": "./out/collage.png",
      "width": 3600,
      "height": 2400,
      "border_color": "white",
+     "background_color": "black",
      "border_percent": 1.0,
      "quality": "best",
      "recursive": true,
-     "seed": 42
+     "seed": 42,
+     "max_upscale": 3
    }
 
 Run it with:
@@ -95,14 +122,16 @@ Example TOML config:
 .. code:: toml
 
    input = "./photos"
-   output = "./out/collage.jpg"
+   output = "./out/collage.png"
    width = 3600
    height = 2400
    border_color = "white"
+   background_color = "black"
    border_percent = 1.0
    quality = "best"
    recursive = true
    seed = 42
+   max_upscale = 3
 
 Run it with:
 
@@ -116,20 +145,22 @@ Options
 .. code:: text
 
    positional arguments:
-     input                 Input image files or directories.
+     input                       Input image files or directories.
 
    options:
-     -c, --config PATH     Path to a JSON or TOML config file.
-     -o, --output PATH     Output image path.
-     --width PX            Output width in pixels.
-     --height PX           Output height in pixels.
-     --border-width PX     Border width in pixels.
-     --border-percent N    Border width as a percentage of larger dimension.
-     --border-color COLOR  Border color, e.g. black, white, #ffcc00.
-     --quality QUALITY     skeleton, fast, or best.
-     --recursive           Search input directories recursively.
-     --include-hidden      Include hidden files and directories.
-     --seed N              Random seed for repeatable layouts.
+     -c, --config PATH           Path to a JSON or TOML config file.
+     -o, --output PATH           Output image path.
+     --width PX                  Output width in pixels.
+     --height PX                 Output height in pixels.
+     --border-width PX           Border width in pixels.
+     --border-percent N          Border width as a percentage of larger dimension.
+     --border-color COLOR        Border color, e.g. black, white, #ffcc00.
+     --background-color COLOR    Background color behind transparent images.
+     --quality QUALITY           skeleton, fast, or best.
+     --recursive                 Search input directories recursively.
+     --include-hidden            Include hidden files and directories.
+     --seed N                    Random seed for repeatable layouts.
+     --max-upscale N             Fail if an image must be enlarged beyond N times.
 
 Hacking
 -------
