@@ -4,3 +4,8 @@ dist
 photocollage.egg-info
 photocollage/locale/photocollage.pot
 photocollage/locale/*/LC_MESSAGES/photocollage.mo
+
+.venv/
+photos/
+out/
+in/
