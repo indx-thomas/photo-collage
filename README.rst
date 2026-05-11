@@ -6,7 +6,7 @@ PhotoCollage
 PhotoCollage allows you to create photo collage posters from image files or
 whole directories. It assembles the input photographs it is given to generate a
 poster image. Photos are automatically arranged to fill the whole poster while
-keeping each photo as large as possible.
+trying to preserve the original photo framing.
 
 This fork removes the GTK desktop interface and exposes PhotoCollage as a
 server-friendly CLI. It is suitable for scripts, Docker containers, homelabs,
@@ -18,6 +18,8 @@ Features:
 * choose output dimensions in pixels
 * choose border color and width
 * choose a background color for transparent PNG/WebP assets
+* preserve framing with cover, contain, and smart crop modes
+* score multiple candidate layouts and pick the best one
 * use a random seed for repeatable layouts
 * warn or fail when small images would be upscaled too far
 * save high-resolution images
@@ -48,18 +50,37 @@ Generate a collage from a directory:
 
    photocollage ./photos --output ./out/collage.jpg --width 3600 --height 2400
 
-Use a deterministic seed and recurse through subdirectories:
+Use smart crop defaults for family photos. This preserves framing when a cell
+would otherwise require a heavy crop:
 
 .. code:: bash
 
    photocollage ./photos \
-     --recursive \
-     --seed 42 \
      --output ./out/collage.png \
-     --width 3508 \
-     --height 2480 \
-     --border-color white \
-     --border-percent 1.5
+     --width 1600 \
+     --height 1200 \
+     --background-color black \
+     --border-color black \
+     --quality best \
+     --max-upscale 3
+
+Try more candidate layouts for better composition:
+
+.. code:: bash
+
+   photocollage ./photos \
+     --output ./out/collage.png \
+     --width 1600 \
+     --height 1200 \
+     --crop-mode smart \
+     --max-crop 0.08 \
+     --layout-tries 100
+
+Crop modes:
+
+* ``cover`` fills every cell. This creates a tight collage, but can crop photo framing aggressively.
+* ``contain`` preserves every full photo. This may add background padding inside cells.
+* ``smart`` uses cover when crop is minor, but falls back to contain when cover would exceed ``--max-crop``.
 
 For transparent logo or artwork assets, choose the canvas background explicitly:
 
@@ -108,7 +129,10 @@ Example JSON config:
      "quality": "best",
      "recursive": true,
      "seed": 42,
-     "max_upscale": 3
+     "max_upscale": 3,
+     "crop_mode": "smart",
+     "max_crop": 0.10,
+     "layout_tries": 50
    }
 
 Run it with:
@@ -132,6 +156,9 @@ Example TOML config:
    recursive = true
    seed = 42
    max_upscale = 3
+   crop_mode = "smart"
+   max_crop = 0.10
+   layout_tries = 50
 
 Run it with:
 
@@ -161,6 +188,9 @@ Options
      --include-hidden            Include hidden files and directories.
      --seed N                    Random seed for repeatable layouts.
      --max-upscale N             Fail if an image must be enlarged beyond N times.
+     --crop-mode MODE            cover, contain, or smart. Defaults to smart.
+     --max-crop N                Crop fraction threshold for smart mode. Defaults to 0.10.
+     --layout-tries N            Candidate layouts to score. Defaults to 50.
 
 Hacking
 -------

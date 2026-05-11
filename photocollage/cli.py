@@ -34,6 +34,9 @@ DEFAULTS = {
     "include_hidden": False,
     "seed": None,
     "max_upscale": None,
+    "crop_mode": "smart",
+    "max_crop": 0.10,
+    "layout_tries": 50,
 }
 
 QUALITY_BY_NAME = {
@@ -118,8 +121,9 @@ def build_page(photolist, width, height, seed=None):
     no_cols = max(1, int(round(math.sqrt(avg_ratio / ratio * virtual_no_imgs))))
 
     page = collage.Page(1.0, ratio, no_cols)
-    random.shuffle(photolist)
-    for photo in photolist:
+    randomized_photos = list(photolist)
+    random.shuffle(randomized_photos)
+    for photo in randomized_photos:
         page.add_cell(photo)
     page.adjust()
     page.scale(float(width) / page.w)
@@ -133,14 +137,18 @@ def photo_cells(page):
                 yield cell
 
 
+def cell_upscale(cell):
+    source_long_edge = max(float(cell.photo.w), float(cell.photo.h))
+    target_long_edge = max(float(cell.w), float(cell.h))
+    if source_long_edge <= 0:
+        return 1.0
+    return target_long_edge / source_long_edge
+
+
 def collect_upscale_warnings(page, max_upscale=None):
     warnings = []
     for cell in photo_cells(page):
-        source_long_edge = max(float(cell.photo.w), float(cell.photo.h))
-        target_long_edge = max(float(cell.w), float(cell.h))
-        if source_long_edge <= 0:
-            continue
-        upscale = target_long_edge / source_long_edge
+        upscale = cell_upscale(cell)
         if upscale > 2.0:
             warnings.append((upscale, cell.photo.filename, cell.photo.w,
                              cell.photo.h, cell.w, cell.h))
@@ -182,8 +190,68 @@ def print_upscale_warnings(warnings):
         )
 
 
+def score_cell(cell, crop_mode, max_crop):
+    crop = render.cell_crop_fraction(cell)
+    upscale = max(0.0, cell_upscale(cell) - 1.0)
+
+    photo_ratio = float(cell.photo.h) / float(cell.photo.w)
+    cell_ratio = float(cell.h) / float(cell.w)
+    aspect_mismatch = abs(math.log(photo_ratio / cell_ratio))
+
+    # Cover fills the collage, but can damage framing. Smart strongly avoids
+    # cells that exceed max_crop because those will render as contained images.
+    if crop_mode == render.CROP_CONTAIN:
+        contain_penalty = aspect_mismatch * 1.5
+        crop_penalty = 0.0
+        overflow_penalty = 0.0
+    elif crop_mode == render.CROP_SMART and crop > max_crop:
+        contain_penalty = aspect_mismatch * 1.2
+        crop_penalty = max_crop * max_crop
+        overflow_penalty = (crop - max_crop) * 8.0
+    else:
+        contain_penalty = 0.0
+        crop_penalty = crop * crop * 10.0
+        overflow_penalty = max(0.0, crop - max_crop) * 20.0
+
+    upscale_penalty = upscale * upscale * 0.25
+    return crop_penalty + overflow_penalty + contain_penalty + upscale_penalty
+
+
+def score_page(page, crop_mode, max_crop):
+    cells = list(photo_cells(page))
+    if not cells:
+        return float("inf")
+    return sum(score_cell(cell, crop_mode, max_crop) for cell in cells) / len(cells)
+
+
+def build_best_page(photolist, width, height, seed=None, layout_tries=1,
+                    crop_mode=render.CROP_SMART, max_crop=0.10):
+    layout_tries = max(1, int(layout_tries))
+    best_page = None
+    best_score = None
+    best_seed = None
+
+    seed_source = random.Random(seed)
+    for index in range(layout_tries):
+        if seed is None:
+            candidate_seed = random.randrange(0, 2 ** 32)
+        elif index == 0:
+            candidate_seed = seed
+        else:
+            candidate_seed = seed_source.randrange(0, 2 ** 32)
+
+        page = build_page(photolist, width, height, seed=candidate_seed)
+        score = score_page(page, crop_mode, max_crop)
+        if best_score is None or score < best_score:
+            best_page = page
+            best_score = score
+            best_seed = candidate_seed
+
+    return best_page, best_score, best_seed
+
+
 def render_to_file(page, output_file, border_width, border_color,
-                   background_color, quality):
+                   background_color, quality, crop_mode, max_crop):
     errors = []
 
     def on_fail(exception):
@@ -195,6 +263,8 @@ def render_to_file(page, output_file, border_width, border_color,
         border_color=border_color,
         background_color=background_color,
         quality=QUALITY_BY_NAME[quality],
+        crop_mode=crop_mode,
+        max_crop=max_crop,
         output_file=output_file,
         on_fail=on_fail,
     )
@@ -233,6 +303,21 @@ def parse_args(argv=None):
         type=float,
         help="Fail if any source image must be enlarged by more than this factor.",
     )
+    parser.add_argument(
+        "--crop-mode",
+        choices=render.CROP_MODES,
+        help="cover fills each cell, contain preserves the whole image, smart contains only when cover would over-crop.",
+    )
+    parser.add_argument(
+        "--max-crop",
+        type=float,
+        help="Maximum allowed crop fraction per image before smart mode falls back to contain.",
+    )
+    parser.add_argument(
+        "--layout-tries",
+        type=int,
+        help="Number of random candidate layouts to score before rendering.",
+    )
     return parser.parse_args(argv)
 
 
@@ -243,7 +328,8 @@ def merged_options(args):
     for key in (
         "output", "width", "height", "border_width", "border_percent",
         "border_color", "background_color", "quality", "recursive",
-        "include_hidden", "seed", "max_upscale",
+        "include_hidden", "seed", "max_upscale", "crop_mode", "max_crop",
+        "layout_tries",
     ):
         value = getattr(args, key)
         if value is not None:
@@ -272,12 +358,20 @@ def main(argv=None):
     if not files:
         raise SystemExit("No supported image files were found.")
 
+    crop_mode = str(options["crop_mode"])
+    max_crop = float(options["max_crop"])
+    if max_crop < 0.0 or max_crop > 1.0:
+        raise SystemExit("--max-crop must be between 0 and 1.")
+
     photolist = render.build_photolist(files)
-    page = build_page(
+    page, layout_score, layout_seed = build_best_page(
         photolist,
         int(options["width"]),
         int(options["height"]),
         seed=options["seed"],
+        layout_tries=int(options["layout_tries"]),
+        crop_mode=crop_mode,
+        max_crop=max_crop,
     )
 
     warnings = collect_upscale_warnings(page, options["max_upscale"])
@@ -303,9 +397,15 @@ def main(argv=None):
         border_color=border_color,
         background_color=background_color,
         quality=str(options["quality"]),
+        crop_mode=crop_mode,
+        max_crop=max_crop,
     )
 
-    print("Wrote {} using {} image(s).".format(output, len(files)))
+    print(
+        "Wrote {} using {} image(s); layout score {:.4f}, seed {}.".format(
+            output, len(files), layout_score, layout_seed
+        )
+    )
     return 0
 
 
